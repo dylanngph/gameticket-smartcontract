@@ -9,7 +9,7 @@ async function main() {
   );
 
   const currency: MyERC20 = <MyERC20>(
-    await erc20Factory.deploy("CUBE BUSD", "BUSD", 6)
+    await erc20Factory.deploy("BUSD", "BUSD", 18)
   );
   await currency.deployed();
   console.log("BUSD deployed to: ", currency.address);
