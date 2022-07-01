@@ -35,17 +35,11 @@ const config: HardhatUserConfig = {
   networks: {
     "bsc-testnet": {
       url: process.env.BSC_RPC,
-      accounts: [
-        process.env.ADMIN_SIGNER_PRIVATE_KEY!,
-        process.env.DEPLOYER_PRIVATE_KEY!,
-      ],
+      accounts: [process.env.DEPLOYER_PRIVATE_KEY!],
     },
     bsc: {
       url: process.env.BSC_RPC,
-      accounts: [
-        process.env.ADMIN_SIGNER_PRIVATE_KEY!,
-        process.env.DEPLOYER_PRIVATE_KEY!,
-      ],
+      accounts: [process.env.DEPLOYER_PRIVATE_KEY!],
     },
   },
   gasReporter: {

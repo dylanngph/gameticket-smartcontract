@@ -5,9 +5,8 @@
   "license": "MIT",
   "scripts": {
     "compile": "hardhat compile",
-    "deploy": "NODE_ENV=production && hardhat run scripts/deploy.ts --network bsc",
-    "verify": "NODE_ENV=production && hardhat verify --network bsc",
-    "deploy-busd:testnet": "hardhat run scripts/deploy-busd.ts --network bsc-testnet",
+    "deploy": "cross-env NODE_ENV=production hardhat run scripts/deploy.ts --network bsc",
+    "verify": "cross-env NODE_ENV=production hardhat verify --network bsc",
     "deploy:testnet": "hardhat run scripts/deploy.ts --network bsc-testnet",
     "verify:testnet": "hardhat verify --network bsc-testnet",
     "test": "hardhat test"
@@ -34,6 +33,7 @@
     "solidity-coverage": "^0.7.20",
     "ts-node": "^10.5.0",
     "typechain": "^7.0.0",
-    "typescript": "^4.5.5"
+    "typescript": "^4.5.5",
+    "cross-env": "^7.0.3"
   }
 }

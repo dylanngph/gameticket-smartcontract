@@ -1,5 +1,9 @@
-import { expect } from "chai";
+import chai, { expect } from "chai";
+import { solidity } from "ethereum-waffle";
 import { ethers } from "hardhat";
+
+chai.use(solidity);
+const { assert } = chai;
 
 describe("Greeter", function () {
   it("Should return the new greeting once it's changed", async function () {
