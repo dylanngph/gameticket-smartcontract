@@ -1,14 +1,15 @@
 import * as dotenv from "dotenv";
 
-import { HardhatUserConfig, task } from "hardhat/config";
-import "@nomiclabs/hardhat-etherscan";
 import "@nomiclabs/hardhat-ethers";
+import "@nomiclabs/hardhat-etherscan";
 import "@nomiclabs/hardhat-waffle";
+import "@openzeppelin/hardhat-upgrades";
 import "@typechain/hardhat";
-import "hardhat-gas-reporter";
-import "solidity-coverage";
 import "hardhat-abi-exporter";
+import "hardhat-gas-reporter";
 import "hardhat-log-remover";
+import { HardhatUserConfig, task } from "hardhat/config";
+import "solidity-coverage";
 
 dotenv.config({
   path: `.env.${process.env.NODE_ENV ? process.env.NODE_ENV : "development"}`,
@@ -33,9 +34,12 @@ const config: HardhatUserConfig = {
     },
   },
   networks: {
-    "bsc-testnet": {
-      url: process.env.BSC_RPC,
-      accounts: [process.env.DEPLOYER_PRIVATE_KEY!],
+    hardhat: {
+      initialBaseFeePerGas: 0,
+      forking: {
+        url: "https://bsc-dataseed1.binance.org/",
+        // blockNumber: 18929615,
+      },
     },
     bsc: {
       url: process.env.BSC_RPC,
