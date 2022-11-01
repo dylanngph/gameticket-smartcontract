@@ -1,15 +1,16 @@
 import * as dotenv from "dotenv";
 
-import "@nomiclabs/hardhat-ethers";
-import "@nomiclabs/hardhat-etherscan";
-import "@nomiclabs/hardhat-waffle";
-import "@openzeppelin/hardhat-upgrades";
-import "@typechain/hardhat";
+// import "@nomiclabs/hardhat-ethers";
+// import "@nomiclabs/hardhat-etherscan";
+// import "@nomiclabs/hardhat-waffle";
+// import "@openzeppelin/hardhat-upgrades";
+// import "@typechain/hardhat";
+// import "hardhat-gas-reporter";
+// import "hardhat-log-remover";
+// import "solidity-coverage";
 import "hardhat-abi-exporter";
-import "hardhat-gas-reporter";
-import "hardhat-log-remover";
 import {HardhatUserConfig, task} from "hardhat/config";
-import "solidity-coverage";
+import "@nomicfoundation/hardhat-toolbox";
 
 dotenv.config({
     path: `.env.${process.env.NODE_ENV ? process.env.NODE_ENV : "development"}`,
@@ -25,11 +26,11 @@ task("accounts", "Prints the list of accounts", async (taskArgs, hre) => {
 
 const config: HardhatUserConfig = {
     solidity: {
-        version: "0.8.4",
+        version: "0.8.9",
         settings: {
             optimizer: {
                 enabled: true,
-                runs: 999999,
+                runs: 1000000,
             },
         },
     },
@@ -47,15 +48,19 @@ const config: HardhatUserConfig = {
         },
     },
     gasReporter: {
-        enabled: process.env.REPORT_GAS !== undefined,
+        // enabled: process.env.REPORT_GAS !== undefined,
+        enabled: true,
         currency: "USD",
+        gasPrice: 5,
+        token: "BNB",
+        gasPriceApi: "https://api.bscscan.com/api?module=proxy&action=eth_gasPrice",
     },
     etherscan: {
         apiKey: process.env.BSCSCAN_API_KEY,
     },
     abiExporter: {
         runOnCompile: true,
-        flat: true,        
+        flat: true,
     },
     typechain: {
         outDir: "types",

@@ -3,15 +3,17 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
+import "@openzeppelin/contracts/utils/Arrays.sol";
 import "./interfaces/IBionTicket.sol";
-import "hardhat/console.sol";
 
 contract BionGameSlot is AccessControl, IERC1155Receiver {
-    struct SnapShot {
-        // try to packed all data into 32 bytes
-        uint128 roundId;
-        uint64 drawnNumber;
-    }
+    using Arrays for uint[];
+
+    // struct SnapShot {
+    //     // try to packed all data into 32 bytes
+    //     uint128 roundId;
+    //     uint64 drawnNumber;
+    // }
 
     // enum PoolState {
     //     OPENING,
@@ -31,17 +33,23 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
     uint public nDrawDigits;
     uint[] public prizeDistributions;
     bool public isStopped;
-    SnapShot[] public snapshots;
+    // roundId => drawnNumber
+    mapping(uint => uint) public snapshots;
     // PoolState public state;
     // roundId => user[]
     mapping(uint => address[]) public participants;
-    // user => roundId => seatId
-    mapping(address => mapping(uint => uint)) public seatOf; // start from 1
-    // roundId => seatId => user
     mapping(uint => mapping(uint => address)) public holderOf;
+    // mapping(uint => uint[]) public sortedSeats;
+    // user => roundId => share amount
+    mapping(address => mapping(uint => uint)) public shareOf;
+    // roundId => startSeatId => user
+    // mapping(uint => mapping(uint => address)) public holderOfStartSeat;
+    // mapping(uint => mapping(address => uint)) public startSeatOf;
+    // mapping(uint => mapping(address => uint)) public endSeatOf;
     // roundId => winner => prize distribution
     // mapping(uint => mapping(address => uint)) public isWinner;
-    mapping(uint => mapping(address => bool)) public isClaimed;
+    // roundId => prize order => isClaimed
+    mapping(uint => mapping(uint => bool)) public isPrizeClaimed;
 
     modifier onlyAdmin() {
         require(hasRole(DEFAULT_ADMIN_ROLE, msg.sender), "BionGameSlot: only admin");
@@ -76,23 +84,31 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
         return digits;
     }
 
-    function deposit(uint roundId_, uint ticketType_) external {
+    function deposit(
+        uint roundId_,
+        uint ticketType_,
+        uint amount_
+    ) external {
         require(!isStopped, "BionGameSlot: stopped");
         require(roundId_ == currentRoundId, "BionGameSlot: invalid roundId");
         require(ticketType_ == STANDARD || ticketType_ == UNMERCHANTABLE, "BionGameSlot: invalid ticket type");
-        // require(state == PoolState.OPENING, "BionGameSlot: not opening");
-        require(filledSlots < totalSlots, "BionGameSlot: full");
+        require(filledSlots + amount_ <= totalSlots, "BionGameSlot: not enough available slots");
+        require(shareOf[msg.sender][roundId_] == 0, "BionGameSlot: already deposited");
 
-        bionTicket.safeTransferFrom(msg.sender, address(this), ticketType_, 1, "");
+        bionTicket.safeTransferFrom(msg.sender, address(this), ticketType_, amount_, "");
 
-        if (seatOf[msg.sender][roundId_] == 0) {
+        if (shareOf[msg.sender][roundId_] == 0) {
             participants[roundId_].push(msg.sender);
         }
-        uint seatId = filledSlots + 1;
-        seatOf[msg.sender][roundId_] = seatId;
-        holderOf[roundId_][seatId] = msg.sender;
+
+        shareOf[msg.sender][roundId_] += amount_;
+
+        for (uint i = 0; i < amount_; i++) {
+            holderOf[roundId_][filledSlots + i] = msg.sender;
+        }
+
         unchecked {
-            filledSlots++;
+            filledSlots += amount_;
         }
     }
 
@@ -101,14 +117,14 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
     }
 
     function getWinnersAtRound(uint roundId_) public view returns (address[] memory) {
-        SnapShot memory snapshot = snapshots[roundId_];
+        uint drawnNumber = snapshots[roundId_];
 
         address[] memory winners = new address[](nPrizes);
 
         for (uint i = 1; i < nPrizes + 1; ) {
             uint curNoDigits = (10**(i * nDrawDigits));
-            uint parsedSeat = snapshot.drawnNumber % curNoDigits;
-            snapshot.drawnNumber /= uint64(curNoDigits);
+            uint parsedSeat = drawnNumber % curNoDigits;
+            drawnNumber /= uint64(curNoDigits);
 
             winners[i - 1] = holderOf[roundId_][parsedSeat];
 
@@ -121,39 +137,39 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
     }
 
     function isWinnerAtRound(address user_, uint roundId_) public view returns (bool isWinner) {
-        uint seatId = seatOf[user_][roundId_];
-        SnapShot memory snapshot = snapshots[roundId_];
+        // uint seatId = seatOf[user_][roundId_];
+        uint drawnNumber = snapshots[roundId_];
 
         for (uint i = 1; i < nPrizes + 1; ) {
             uint curNoDigits = (10**(i * nDrawDigits));
-            uint parsedSeat = snapshot.drawnNumber % curNoDigits;
-            snapshot.drawnNumber /= uint64(curNoDigits);
+            uint parsedSeat = drawnNumber % curNoDigits;
+            drawnNumber /= uint64(curNoDigits);
 
-            if (parsedSeat == seatId) {
-                isWinner = true;
-                break;
+            if (holderOf[roundId_][parsedSeat] == user_) {
+                return true;
             }
+
             unchecked {
                 i++;
             }
         }
     }
 
-    function calcClaimablePrize(address user_, uint roundId_) public view returns (uint) {
-        uint seatId = seatOf[user_][roundId_];
-        if (isClaimed[roundId_][user_] || roundId_ >= currentRoundId || seatId == 0) {
-            return 0;
+    // returns (prize, amount)
+    function calcClaimablePrize(address user_, uint roundId_) public view returns (uint, uint) {
+        if (roundId_ >= currentRoundId || shareOf[user_][roundId_] == 0) {
+            return (0, 0);
         }
 
-        SnapShot memory snapshot = snapshots[roundId_];
+        uint drawnNumber = snapshots[roundId_];
 
         bool isWinner = false;
         uint i = 1;
         for (; i < nPrizes + 1; ) {
             uint curNoDigits = (10**(i * nDrawDigits));
-            uint digit = snapshot.drawnNumber % curNoDigits;
-            snapshot.drawnNumber /= uint64(curNoDigits);
-            if (digit == seatId) {
+            uint digit = drawnNumber % curNoDigits;
+            drawnNumber /= uint64(curNoDigits);
+            if (holderOf[roundId_][digit] == user_) {
                 isWinner = true;
                 break;
             }
@@ -162,32 +178,30 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
             }
         }
 
-        if (!isWinner) {
-            return 0;
+        if (!isWinner || isPrizeClaimed[roundId_][i]) {
+            return (0, 0);
         }
-        return prizeDistributions[i - 1];
+        return (i, prizeDistributions[i - 1]);
     }
 
     function claim(uint roundId_) external {
-        uint claimablePrize = calcClaimablePrize(msg.sender, roundId_);
+        (uint prize, uint claimablePrize) = calcClaimablePrize(msg.sender, roundId_);
         require(claimablePrize > 0, "BionGameSlot: nothing to claim");
 
         bionTicket.safeTransferFrom(address(this), msg.sender, STANDARD, claimablePrize, "");
-
-        isClaimed[roundId_][msg.sender] = true;
+        isPrizeClaimed[roundId_][prize] = true;
     }
 
     function onRandomReceived(uint randomNumber) external {
         require(msg.sender == randomGenerator, "BionGameSlot: invalid random generator");
 
-        uint[] memory availableSlots = new uint[](totalSlots + 1);
-        // SnapShot memory snapshot = SnapShot({roundId: currentRoundId, winners: new address[](nPrizes)});
-        uint lastIndex = totalSlots;
-
+        uint lastIndex = totalSlots - 1;
         uint drawnNumber = 10**((nPrizes * nDrawDigits));
-`
+        uint[] memory availableSlots = new uint[](totalSlots);
+
         for (uint i = 0; i < nPrizes; ) {
-            uint draw = uint((uint(keccak256(abi.encodePacked(randomNumber, i))) % lastIndex) + 1);
+            uint draw = uint(keccak256(abi.encodePacked(randomNumber, i))) % (lastIndex + 1);
+
             uint result;
             uint valAtIndex = availableSlots[draw];
             if (valAtIndex == 0) {
@@ -199,8 +213,6 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
             }
 
             drawnNumber = drawnNumber + uint(result * (10**(i * nDrawDigits)));
-            // isWinner[currentRoundId][holderOf[currentRoundId][result]] = prizeDistributions[i];
-            console.log("draw: %s, result: %s, drawnNumber: %s", draw, result, drawnNumber);
 
             uint lastValInArray = availableSlots[lastIndex];
             if (draw != lastIndex) {
@@ -220,7 +232,8 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
                 i++;
             }
         }
-        snapshots.push(SnapShot({roundId: uint128(currentRoundId), drawnNumber: uint64(drawnNumber)}));
+
+        snapshots[currentRoundId] = drawnNumber;
 
         // reset pool
         // state = PoolState.RESULT_DRAWN;
