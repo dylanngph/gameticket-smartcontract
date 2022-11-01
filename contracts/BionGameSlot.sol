@@ -3,23 +3,11 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
-import "@openzeppelin/contracts/utils/Arrays.sol";
 import "./interfaces/IBionTicket.sol";
 
 contract BionGameSlot is AccessControl, IERC1155Receiver {
-    using Arrays for uint[];
+    bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
-    // struct SnapShot {
-    //     // try to packed all data into 32 bytes
-    //     uint128 roundId;
-    //     uint64 drawnNumber;
-    // }
-
-    // enum PoolState {
-    //     OPENING,
-    //     RESULT_DRAWING,
-    //     RESULT_DRAWN
-    // }
     uint public immutable STANDARD;
     uint public immutable UNMERCHANTABLE;
 
@@ -35,24 +23,22 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
     bool public isStopped;
     // roundId => drawnNumber
     mapping(uint => uint) public snapshots;
-    // PoolState public state;
     // roundId => user[]
     mapping(uint => address[]) public participants;
+    // roundId => seatId => user
     mapping(uint => mapping(uint => address)) public holderOf;
-    // mapping(uint => uint[]) public sortedSeats;
-    // user => roundId => share amount
+    // user => roundId => amount
     mapping(address => mapping(uint => uint)) public shareOf;
-    // roundId => startSeatId => user
-    // mapping(uint => mapping(uint => address)) public holderOfStartSeat;
-    // mapping(uint => mapping(address => uint)) public startSeatOf;
-    // mapping(uint => mapping(address => uint)) public endSeatOf;
-    // roundId => winner => prize distribution
-    // mapping(uint => mapping(address => uint)) public isWinner;
-    // roundId => prize order => isClaimed
+    // roundId => prize => bool
     mapping(uint => mapping(uint => bool)) public isPrizeClaimed;
 
     modifier onlyAdmin() {
         require(hasRole(DEFAULT_ADMIN_ROLE, msg.sender), "BionGameSlot: only admin");
+        _;
+    }
+
+    modifier onlyOperator() {
+        require(hasRole(OPERATOR_ROLE, msg.sender), "BionGameSlot: only operator");
         _;
     }
 
@@ -75,6 +61,10 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
         UNMERCHANTABLE = bionTicket.UNMERCHANTABLE();
     }
 
+    function grantOperatorRole(address operator) external onlyAdmin {
+        grantRole(OPERATOR_ROLE, operator);
+    }
+
     function calcNumberDigits(uint number) public pure returns (uint) {
         uint digits = 0;
         while (number > 0) {
@@ -93,7 +83,7 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
         require(roundId_ == currentRoundId, "BionGameSlot: invalid roundId");
         require(ticketType_ == STANDARD || ticketType_ == UNMERCHANTABLE, "BionGameSlot: invalid ticket type");
         require(filledSlots + amount_ <= totalSlots, "BionGameSlot: not enough available slots");
-        require(shareOf[msg.sender][roundId_] == 0, "BionGameSlot: already deposited");
+        // require(shareOf[msg.sender][roundId_] == 0, "BionGameSlot: already deposited");
 
         bionTicket.safeTransferFrom(msg.sender, address(this), ticketType_, amount_, "");
 
@@ -121,12 +111,11 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
 
         address[] memory winners = new address[](nPrizes);
 
-        for (uint i = 1; i < nPrizes + 1; ) {
-            uint curNoDigits = (10**(i * nDrawDigits));
-            uint parsedSeat = drawnNumber % curNoDigits;
-            drawnNumber /= uint64(curNoDigits);
+        for (uint i = 0; i < nPrizes; ) {
+            uint parsedSeat = drawnNumber % (10**nDrawDigits);
+            drawnNumber /= 10**nDrawDigits;
 
-            winners[i - 1] = holderOf[roundId_][parsedSeat];
+            winners[i] = holderOf[roundId_][parsedSeat];
 
             unchecked {
                 i++;
@@ -136,16 +125,18 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
         return winners;
     }
 
-    function isWinnerAtRound(address user_, uint roundId_) public view returns (bool isWinner) {
-        // uint seatId = seatOf[user_][roundId_];
+    function isWinnerOfPrize(
+        address user_,
+        uint roundId_,
+        uint prize_
+    ) public view returns (bool isWinner) {
         uint drawnNumber = snapshots[roundId_];
 
-        for (uint i = 1; i < nPrizes + 1; ) {
-            uint curNoDigits = (10**(i * nDrawDigits));
-            uint parsedSeat = drawnNumber % curNoDigits;
-            drawnNumber /= uint64(curNoDigits);
+        for (uint i = 0; i < nPrizes; ) {
+            uint parsedSeat = drawnNumber % (10**nDrawDigits);
+            drawnNumber /= 10**nDrawDigits;
 
-            if (holderOf[roundId_][parsedSeat] == user_) {
+            if (holderOf[roundId_][parsedSeat] == user_ && prize_ == i) {
                 return true;
             }
 
@@ -155,46 +146,38 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
         }
     }
 
-    // returns (prize, amount)
-    function calcClaimablePrize(address user_, uint roundId_) public view returns (uint, uint) {
+    function getClaimablePrizesOfUser(address user_, uint roundId_) public view returns (bool[] memory) {
+        bool[] memory prizes = new bool[](nPrizes);
         if (roundId_ >= currentRoundId || shareOf[user_][roundId_] == 0) {
-            return (0, 0);
+            return prizes;
         }
 
         uint drawnNumber = snapshots[roundId_];
 
-        bool isWinner = false;
-        uint i = 1;
-        for (; i < nPrizes + 1; ) {
-            uint curNoDigits = (10**(i * nDrawDigits));
-            uint digit = drawnNumber % curNoDigits;
-            drawnNumber /= uint64(curNoDigits);
-            if (holderOf[roundId_][digit] == user_) {
-                isWinner = true;
-                break;
+        uint i = 0;
+        for (; i < nPrizes; ) {
+            uint digit = drawnNumber % (10**nDrawDigits);
+            drawnNumber /= 10**nDrawDigits;
+            if (holderOf[roundId_][digit] == user_ && !isPrizeClaimed[roundId_][i]) {
+                prizes[i] = true;
             }
             unchecked {
                 i++;
             }
         }
 
-        if (!isWinner || isPrizeClaimed[roundId_][i]) {
-            return (0, 0);
-        }
-        return (i, prizeDistributions[i - 1]);
+        return prizes;
     }
 
-    function claim(uint roundId_) external {
-        (uint prize, uint claimablePrize) = calcClaimablePrize(msg.sender, roundId_);
-        require(claimablePrize > 0, "BionGameSlot: nothing to claim");
+    function claim(uint roundId_, uint prize) external {
+        require(isWinnerOfPrize(msg.sender, roundId_, prize), "BionGameSlot: not winner");
+        require(!isPrizeClaimed[roundId_][prize], "BionGameSlot: already claimed");
 
-        bionTicket.safeTransferFrom(address(this), msg.sender, STANDARD, claimablePrize, "");
+        bionTicket.safeTransferFrom(address(this), msg.sender, STANDARD, prizeDistributions[prize], "");
         isPrizeClaimed[roundId_][prize] = true;
     }
 
-    function onRandomReceived(uint randomNumber) external {
-        require(msg.sender == randomGenerator, "BionGameSlot: invalid random generator");
-
+    function onRandomReceived(uint randomNumber) external onlyOperator {
         uint lastIndex = totalSlots - 1;
         uint drawnNumber = 10**((nPrizes * nDrawDigits));
         uint[] memory availableSlots = new uint[](totalSlots);
@@ -213,7 +196,6 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
             }
 
             drawnNumber = drawnNumber + uint(result * (10**(i * nDrawDigits)));
-
             uint lastValInArray = availableSlots[lastIndex];
             if (draw != lastIndex) {
                 // Replace the value at draw, now that it's been used.
