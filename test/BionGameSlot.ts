@@ -23,6 +23,8 @@ describe("BionGameSlot", function () {
     const STANDARD = 0;
     const UNMERCHANTABLE = 1;
 
+    const TICKET_TYPE_TO_USE = UNMERCHANTABLE;
+
     const TOTAL_SLOTS = 10;
     const NPRIZES = 3;
     const PRIZE_DISTRIBUTION = [5, 1, 1];
@@ -54,6 +56,7 @@ describe("BionGameSlot", function () {
         );
         await mockVRFCoordinator.addConsumer(MOCK_SUBSCRIPTION_ID, bionGameSlot.address);
         await bionGameSlot.grantOperatorRole(admin.address);
+        await bionTicket.mint(bionGameSlot.address, 1000, STANDARD);
 
         return {bionGameSlot, bionTicket, mockVRFCoordinator};
     }
@@ -61,10 +64,10 @@ describe("BionGameSlot", function () {
     async function setupParticipants(roundId: number) {
         const participants = (await ethers.getSigners()).slice(1, 11);
         for (const participant of participants) {
-            await bionTicket.mint(participant.address, 1, STANDARD);
+            await bionTicket.mint(participant.address, 1, TICKET_TYPE_TO_USE);
             await bionTicket.connect(participant).setApprovalForAll(bionGameSlot.address, true);
 
-            await bionGameSlot.connect(participant).deposit(roundId, STANDARD, 1);
+            await bionGameSlot.connect(participant).deposit(roundId, TICKET_TYPE_TO_USE, 1);
         }
         return participants;
     }
@@ -117,26 +120,26 @@ describe("BionGameSlot", function () {
             const participants = await setupParticipants(firstRoundId);
 
             expect(await bionGameSlot.getParticipantsAtRound(FIRST_ROUND_ID)).to.have.lengthOf(10);
-            expect(await bionTicket.balanceOf(participants[0].address, STANDARD)).to.equal(0);
-            expect(await bionTicket.balanceOf(bionGameSlot.address, STANDARD)).to.equal(10);
+            expect(await bionTicket.balanceOf(participants[0].address, TICKET_TYPE_TO_USE)).to.equal(0);
+            expect(await bionTicket.balanceOf(bionGameSlot.address, TICKET_TYPE_TO_USE)).to.equal(10);
             expect(await bionGameSlot.shareOf(participants[0].address, FIRST_ROUND_ID)).to.equal(1);
             expect(await bionGameSlot.holderOf(FIRST_ROUND_ID, 0)).to.equal(participants[0].address);
 
-            await expect(bionGameSlot.connect(user1).deposit(FIRST_ROUND_ID, STANDARD, 1)).to.revertedWith(
+            await expect(bionGameSlot.connect(user1).deposit(FIRST_ROUND_ID, TICKET_TYPE_TO_USE, 1)).to.revertedWith(
                 "BionGameSlot: not enough available slots"
             );
         });
 
         it("should deposit many", async () => {
-            await bionTicket.mint(user1.address, 10, STANDARD);
+            await bionTicket.mint(user1.address, 10, TICKET_TYPE_TO_USE);
             await bionTicket.connect(user1).setApprovalForAll(bionGameSlot.address, true);
 
-            await bionGameSlot.connect(user1).deposit(FIRST_ROUND_ID, STANDARD, 9);
-            await bionGameSlot.connect(user1).deposit(FIRST_ROUND_ID, STANDARD, 1);
+            await bionGameSlot.connect(user1).deposit(FIRST_ROUND_ID, TICKET_TYPE_TO_USE, 9);
+            await bionGameSlot.connect(user1).deposit(FIRST_ROUND_ID, TICKET_TYPE_TO_USE, 1);
 
             expect(await bionGameSlot.getParticipantsAtRound(FIRST_ROUND_ID)).to.have.lengthOf(1);
-            expect(await bionTicket.balanceOf(user1.address, STANDARD)).to.equal(0);
-            expect(await bionTicket.balanceOf(bionGameSlot.address, STANDARD)).to.equal(10);
+            expect(await bionTicket.balanceOf(user1.address, TICKET_TYPE_TO_USE)).to.equal(0);
+            expect(await bionTicket.balanceOf(bionGameSlot.address, TICKET_TYPE_TO_USE)).to.equal(10);
             expect(await bionGameSlot.shareOf(user1.address, FIRST_ROUND_ID)).to.equal(10);
             expect(await bionGameSlot.holderOf(FIRST_ROUND_ID, 0)).to.equal(user1.address);
             expect(await bionGameSlot.holderOf(FIRST_ROUND_ID, 1)).to.equal(user1.address);
