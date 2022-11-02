@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
+import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
 import "./interfaces/IBionTicket.sol";
 
-contract BionGameSlot is AccessControl, IERC1155Receiver {
+contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
     uint public immutable STANDARD;
     uint public immutable UNMERCHANTABLE;
 
-    address public randomGenerator;
     IBionTicket public bionTicket;
 
     uint public totalSlots;
@@ -32,6 +33,19 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
     // roundId => prize => bool
     mapping(uint => mapping(uint => bool)) public isPrizeClaimed;
 
+    // VRF
+    VRFCoordinatorV2Interface public COORDINATOR;
+    bytes32 public keyHash;
+    uint64 public subscriptionId;
+    uint32 public callbackGasLimit = 300000;
+    uint32 public numWords = 1;
+    uint16 public requestConfirmations = 3;
+    uint public lastRequestId;
+    bool public isDrawing;
+
+    event StartDrawSlots(uint roundId);
+    event EndDrawSlots(uint roundId, uint randomResult);
+
     modifier onlyAdmin() {
         require(hasRole(DEFAULT_ADMIN_ROLE, msg.sender), "BionGameSlot: only admin");
         _;
@@ -44,13 +58,14 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
 
     constructor(
         IBionTicket bionTicket_,
-        address randomGenerator_,
         uint totalSlots_,
         uint nPrizes_,
-        uint[] memory prizeDistribution_
-    ) {
+        uint[] memory prizeDistribution_,
+        address coordinator_,
+        uint64 subscriptionId_,
+        bytes32 keyHash_
+    ) VRFConsumerBaseV2(coordinator_) {
         _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        randomGenerator = randomGenerator_;
         bionTicket = bionTicket_;
         totalSlots = totalSlots_;
         nPrizes = nPrizes_;
@@ -59,6 +74,10 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
 
         STANDARD = bionTicket.STANDARD();
         UNMERCHANTABLE = bionTicket.UNMERCHANTABLE();
+
+        COORDINATOR = VRFCoordinatorV2Interface(coordinator_);
+        subscriptionId = subscriptionId_;
+        keyHash = keyHash_;
     }
 
     function grantOperatorRole(address operator) external onlyAdmin {
@@ -83,7 +102,6 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
         require(roundId_ == currentRoundId, "BionGameSlot: invalid roundId");
         require(ticketType_ == STANDARD || ticketType_ == UNMERCHANTABLE, "BionGameSlot: invalid ticket type");
         require(filledSlots + amount_ <= totalSlots, "BionGameSlot: not enough available slots");
-        // require(shareOf[msg.sender][roundId_] == 0, "BionGameSlot: already deposited");
 
         bionTicket.safeTransferFrom(msg.sender, address(this), ticketType_, amount_, "");
 
@@ -177,7 +195,7 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
         isPrizeClaimed[roundId_][prize] = true;
     }
 
-    function onRandomReceived(uint randomNumber) external onlyOperator {
+    function drawSlots(uint randomNumber) public view returns (uint) {
         uint lastIndex = totalSlots - 1;
         uint drawnNumber = 10**((nPrizes * nDrawDigits));
         uint[] memory availableSlots = new uint[](totalSlots);
@@ -215,14 +233,7 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
             }
         }
 
-        snapshots[currentRoundId] = drawnNumber;
-
-        // reset pool
-        // state = PoolState.RESULT_DRAWN;
-        filledSlots = 0;
-        unchecked {
-            currentRoundId++;
-        }
+        return drawnNumber;
     }
 
     function onERC1155Received(
@@ -243,5 +254,39 @@ contract BionGameSlot is AccessControl, IERC1155Receiver {
         bytes calldata
     ) external pure override returns (bytes4) {
         return bytes4(keccak256("onERC1155BatchReceived(address,address,uint256[],uint256[],bytes)"));
+    }
+
+    function requestRandom() external onlyOperator {
+        require(!isStopped, "BionGameSlot: stopped");
+        require(filledSlots == totalSlots, "BionGameSlot: not enough participants");
+        require(snapshots[currentRoundId] == 0, "BionGameSlot: already drawn");
+        require(!isDrawing, "BionGameSlot: is drawing");
+
+        isDrawing = true;
+        uint requestId = COORDINATOR.requestRandomWords(
+            keyHash,
+            subscriptionId,
+            requestConfirmations,
+            callbackGasLimit,
+            numWords
+        );
+        lastRequestId = requestId;
+        emit StartDrawSlots(currentRoundId);
+    }
+
+    function fulfillRandomWords(uint256 requestId, uint256[] memory randomWords) internal override {
+        require(requestId == lastRequestId, "BionGameSlot: invalid requestId");
+        require(isDrawing, "BionGameSlot: not drawing");
+        uint drawnNumber = drawSlots(randomWords[0]);
+
+        isDrawing = false;
+        snapshots[currentRoundId] = drawnNumber;
+        filledSlots = 0;
+        uint roundId = currentRoundId;
+        unchecked {
+            currentRoundId++;
+        }
+
+        emit EndDrawSlots(roundId, drawnNumber);
     }
 }

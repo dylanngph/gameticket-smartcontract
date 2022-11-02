@@ -1,11 +1,16 @@
 import {loadFixture} from "@nomicfoundation/hardhat-network-helpers";
 import {SignerWithAddress} from "@nomiclabs/hardhat-ethers/signers";
 import {expect} from "chai";
+import {BigNumber} from "ethers";
 import {ethers} from "hardhat";
-import {BionGameSlot} from "../types/contracts/BionGameSlot";
-import {BionTicket} from "../types/contracts/BionTicket";
-import {BionGameSlot__factory} from "../types/factories/contracts/BionGameSlot__factory";
-import {BionTicket__factory} from "../types/factories/contracts/BionTicket__factory";
+import {
+    BionGameSlot,
+    BionGameSlot__factory,
+    BionTicket,
+    BionTicket__factory,
+    VRFCoordinatorV2Mock__factory,
+    VRFCoordinatorV2Mock,
+} from "../types";
 
 describe("BionGameSlot", function () {
     let admin: SignerWithAddress;
@@ -13,6 +18,7 @@ describe("BionGameSlot", function () {
     let user2: SignerWithAddress;
     let bionGameSlot: BionGameSlot;
     let bionTicket: BionTicket;
+    let mockVRFCoordinator: VRFCoordinatorV2Mock;
 
     const STANDARD = 0;
     const UNMERCHANTABLE = 1;
@@ -21,6 +27,8 @@ describe("BionGameSlot", function () {
     const NPRIZES = 3;
     const PRIZE_DISTRIBUTION = [5, 1, 1];
     const FIRST_ROUND_ID = 0;
+    const MOCK_SUBSCRIPTION_ID = 1;
+    const MOCK_KEY_HASH = "0xd4bb89654db74673a187bd804519e65e3f71a52bc55f11da7601a13dcf505314";
 
     async function setupDeployments() {
         [admin, user1, user2] = await ethers.getSigners();
@@ -28,31 +36,70 @@ describe("BionGameSlot", function () {
         const bionTicket = await (<BionTicket__factory>await ethers.getContractFactory("BionTicket")).deploy();
         await bionTicket.grantMinterRole(admin.address);
 
+        const mockVRFCoordinator = await (<VRFCoordinatorV2Mock__factory>(
+            await ethers.getContractFactory("VRFCoordinatorV2Mock")
+        )).deploy(0, 0);
+
+        await mockVRFCoordinator.createSubscription();
+        await mockVRFCoordinator.fundSubscription(MOCK_SUBSCRIPTION_ID, ethers.utils.parseEther("1"));
+
         const bionGameSlot = await (<BionGameSlot__factory>await ethers.getContractFactory("BionGameSlot")).deploy(
             bionTicket.address,
-            admin.address,
             TOTAL_SLOTS,
             NPRIZES,
-            PRIZE_DISTRIBUTION
+            PRIZE_DISTRIBUTION,
+            mockVRFCoordinator.address,
+            MOCK_SUBSCRIPTION_ID,
+            MOCK_KEY_HASH
         );
+        await mockVRFCoordinator.addConsumer(MOCK_SUBSCRIPTION_ID, bionGameSlot.address);
         await bionGameSlot.grantOperatorRole(admin.address);
 
-        return {bionGameSlot, bionTicket};
+        return {bionGameSlot, bionTicket, mockVRFCoordinator};
     }
 
-    async function setupParticipants() {
+    async function setupParticipants(roundId: number) {
         const participants = (await ethers.getSigners()).slice(1, 11);
         for (const participant of participants) {
             await bionTicket.mint(participant.address, 1, STANDARD);
             await bionTicket.connect(participant).setApprovalForAll(bionGameSlot.address, true);
 
-            await bionGameSlot.connect(participant).deposit(0, STANDARD, 1);
+            await bionGameSlot.connect(participant).deposit(roundId, STANDARD, 1);
         }
         return participants;
     }
 
+    async function setupDraw() {
+        await bionGameSlot.requestRandom();
+        const requestId = await bionGameSlot.lastRequestId();
+        await mockVRFCoordinator.fulfillRandomWords(requestId, bionGameSlot.address);
+    }
+
+    async function setupClaim(roundId: number, participants: SignerWithAddress[]) {
+        const drawnNumber = await bionGameSlot.snapshots(roundId);
+        const winningSeats = getWinningSeatsFromDrawnNumber(drawnNumber, NPRIZES);
+
+        // claim prize
+        for (let i = 0; i < winningSeats.length; i++) {
+            await bionGameSlot.connect(participants[winningSeats[i]]).claim(roundId, i);
+        }
+    }
+
+    function getWinningSeatsFromDrawnNumber(drawnNumber: BigNumber, nPrizes: number) {
+        const winningSeats: number[] = [];
+        for (let i = 0; i < nPrizes; i++) {
+            winningSeats.push(
+                drawnNumber
+                    .mod((100 ** (i + 1)).toString())
+                    .div((100 ** i).toString())
+                    .toNumber()
+            );
+        }
+        return winningSeats;
+    }
+
     beforeEach(async () => {
-        ({bionGameSlot, bionTicket} = await loadFixture(setupDeployments));
+        ({bionGameSlot, bionTicket, mockVRFCoordinator} = await loadFixture(setupDeployments));
     });
 
     describe("DEPLOYMENT", () => {
@@ -66,7 +113,8 @@ describe("BionGameSlot", function () {
 
     describe("DEPOSIT", () => {
         it("should deposit", async () => {
-            const participants = await setupParticipants();
+            const firstRoundId = 0;
+            const participants = await setupParticipants(firstRoundId);
 
             expect(await bionGameSlot.getParticipantsAtRound(FIRST_ROUND_ID)).to.have.lengthOf(10);
             expect(await bionTicket.balanceOf(participants[0].address, STANDARD)).to.equal(0);
@@ -104,77 +152,79 @@ describe("BionGameSlot", function () {
             const prizeDistribution = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
             const bionGameSlot = await (<BionGameSlot__factory>await ethers.getContractFactory("BionGameSlot")).deploy(
                 bionTicket.address,
-                admin.address,
                 totalSlots,
                 nPrizes,
-                prizeDistribution
+                prizeDistribution,
+                mockVRFCoordinator.address,
+                MOCK_SUBSCRIPTION_ID,
+                MOCK_KEY_HASH
             );
             await bionGameSlot.grantOperatorRole(admin.address);
 
-            await bionGameSlot.onRandomReceived("111");
+            const drawnNumber = await bionGameSlot.drawSlots("111");
 
-            const drawnNumber = await bionGameSlot.snapshots(0);
-
-            const winningSeats: number[] = [];
-            for (let i = 0; i < nPrizes; i++) {
-                winningSeats.push(
-                    drawnNumber
-                        .mod((100 ** (i + 1)).toString())
-                        .div((100 ** i).toString())
-                        .toNumber()
-                );
-            }
+            const winningSeats = getWinningSeatsFromDrawnNumber(drawnNumber, nPrizes);
 
             expect(winningSeats.length).to.equal(nPrizes);
             // is unique
             expect(winningSeats.every((seat, index) => winningSeats.indexOf(seat) === index)).to.be.true;
         });
+
+        it("should draw by requesting and receiving random", async () => {
+            const firstRoundId = 0;
+            await setupParticipants(firstRoundId);
+
+            await expect(bionGameSlot.requestRandom()).to.emit(bionGameSlot, "StartDrawSlots");
+            await expect(bionGameSlot.requestRandom()).to.revertedWith("BionGameSlot: is drawing");
+
+            const requestId = await bionGameSlot.lastRequestId();
+            await expect(mockVRFCoordinator.fulfillRandomWords(requestId, bionGameSlot.address)).to.emit(
+                bionGameSlot,
+                "EndDrawSlots"
+            );
+        });
     });
 
-    describe("CLAIM", async () => {
+    describe("CLAIM", () => {
         it("should claim", async () => {
-            const participants = await setupParticipants();
-
             const firstRoundId = 0;
-            /*
-            seed: 111
-            draw: 2, result: 2, drawnNumber: 1000002
-            draw: 1, result: 1, drawnNumber: 1000102
-            draw: 4, result: 4, drawnNumber: 1040102
-            */
-            await bionGameSlot.onRandomReceived("111"); // drawnNumber: 1040102
+            const participants = await setupParticipants(firstRoundId);
+            await setupDraw();
 
-            expect(await bionGameSlot.getWinnersAtRound(firstRoundId)).to.have.members([
-                participants[2].address,
-                participants[1].address,
-                participants[4].address,
-            ]);
+            const drawnNumber = await bionGameSlot.snapshots(firstRoundId);
+            const winningSeats = getWinningSeatsFromDrawnNumber(drawnNumber, NPRIZES);
 
-            // first prize
-            await bionGameSlot.connect(participants[2]).claim(firstRoundId, 0);
-            expect(await bionTicket.balanceOf(participants[2].address, STANDARD)).to.equal(PRIZE_DISTRIBUTION[0]);
-            await expect(bionGameSlot.connect(participants[2]).claim(firstRoundId, 0)).to.revertedWith(
-                "BionGameSlot: already claimed"
-            );
+            const winners = await bionGameSlot.getWinnersAtRound(firstRoundId);
+            expect(winners).to.have.members(winningSeats.map((seat) => participants[seat].address));
 
-            // second prize
-            await bionGameSlot.connect(participants[1]).claim(firstRoundId, 1);
-            expect(await bionTicket.balanceOf(participants[1].address, STANDARD)).to.equal(PRIZE_DISTRIBUTION[1]);
-            await expect(bionGameSlot.connect(participants[1]).claim(firstRoundId, 1)).to.revertedWith(
-                "BionGameSlot: already claimed"
-            );
-
-            // third prize
-            await bionGameSlot.connect(participants[4]).claim(firstRoundId, 2);
-            expect(await bionTicket.balanceOf(participants[4].address, STANDARD)).to.equal(PRIZE_DISTRIBUTION[2]);
-            await expect(bionGameSlot.connect(participants[4]).claim(firstRoundId, 2)).to.revertedWith(
-                "BionGameSlot: already claimed"
-            );
+            // claim prize
+            for (let i = 0; i < winningSeats.length; i++) {
+                await bionGameSlot.connect(participants[winningSeats[i]]).claim(firstRoundId, i);
+                expect(await bionTicket.balanceOf(participants[winningSeats[i]].address, STANDARD)).to.equal(
+                    PRIZE_DISTRIBUTION[i]
+                );
+                await expect(bionGameSlot.connect(participants[winningSeats[i]]).claim(firstRoundId, i)).to.revertedWith(
+                    "BionGameSlot: already claimed"
+                );
+            }
 
             // not winner
-            await expect(bionGameSlot.connect(participants[0]).claim(firstRoundId, 1)).to.revertedWith(
-                "BionGameSlot: not winner"
-            );
+            await expect(bionGameSlot.connect(admin).claim(firstRoundId, 1)).to.revertedWith("BionGameSlot: not winner");
+        });
+    });
+
+    describe("E2E", async () => {
+        it("should E2E", async () => {
+            const firstRoundId = 0;
+            const participants = await setupParticipants(firstRoundId);
+            await setupDraw();
+            await setupClaim(firstRoundId, participants);
+            expect(await bionGameSlot.currentRoundId()).to.equal(firstRoundId + 1);
+
+            await setupParticipants(firstRoundId + 1);
+            await setupDraw();
+            await setupClaim(firstRoundId + 1, participants);
+            expect(await bionGameSlot.currentRoundId()).to.equal(firstRoundId + 2);
         });
     });
 });
