@@ -43,8 +43,8 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
     uint public lastRequestId;
     bool public isDrawing;
 
-    event Deposit(uint roundId, address user, uint amount);
-    event Claim(uint roundId, address user, uint prize, uint amount);
+    event Deposit(uint indexed roundId, address indexed user, uint amount);
+    event Claim(uint indexed roundId, address indexed user, uint prize, uint amount);
     event StartDrawSlots(uint roundId);
     event EndDrawSlots(uint roundId, uint randomResult);
 

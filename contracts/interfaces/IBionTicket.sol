@@ -13,4 +13,6 @@ interface IBionTicket is IERC1155 {
     function STANDARD() external view returns (uint256);
 
     function UNMERCHANTABLE() external view returns (uint256);
+
+    function mint(address account_, uint256 amount_, uint ticketType_) external;
 }
