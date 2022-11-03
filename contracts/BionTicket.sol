@@ -10,10 +10,11 @@ contract BionTicket is ERC1155, AccessControl {
 
     string public constant name = "Bion Ticket";
     string public constant symbol = "BIONT";
+    string public baseURI = "https://api.bionswap.com/ticket/metadata/";
 
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
-    constructor() ERC1155("https://api.bionswap.com/ticket/metadata/{id}.json") {
+    constructor() ERC1155("https://api.bionswap.com/ticket/metadata/") {
         _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
     }
 
@@ -31,6 +32,10 @@ contract BionTicket is ERC1155, AccessControl {
         grantRole(MINTER_ROLE, account_);
     }
 
+    function setBaseURI(string memory baseURI_) public onlyAdmin {
+        baseURI = baseURI_;
+    }
+
     function mint(
         address account_,
         uint256 amount_,
@@ -39,16 +44,18 @@ contract BionTicket is ERC1155, AccessControl {
         _mint(account_, ticketType_, amount_, "");
     }
 
-    function supportsInterface(bytes4 interfaceId_)
-        public
-        view
-        virtual
-        override(ERC1155, AccessControl)
-        returns (bool)
-    {
+    function burn(uint256 amount_, uint ticketType_) external {
+        _burn(msg.sender, ticketType_, amount_);
+    }
+
+    function supportsInterface(bytes4 interfaceId_) public view virtual override(ERC1155, AccessControl) returns (bool) {
         return
             interfaceId_ == type(IERC1155).interfaceId ||
             interfaceId_ == type(IERC1155MetadataURI).interfaceId ||
             interfaceId_ == type(IAccessControl).interfaceId;
+    }
+
+    function uri(uint256 id) public view override returns (string memory) {
+        return string(abi.encodePacked(baseURI, id));
     }
 }

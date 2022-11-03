@@ -43,6 +43,8 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
     uint public lastRequestId;
     bool public isDrawing;
 
+    event Deposit(uint roundId, address user, uint amount);
+    event Claim(uint roundId, address user, uint prize, uint amount);
     event StartDrawSlots(uint roundId);
     event EndDrawSlots(uint roundId, uint randomResult);
 
@@ -78,6 +80,26 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
         COORDINATOR = VRFCoordinatorV2Interface(coordinator_);
         subscriptionId = subscriptionId_;
         keyHash = keyHash_;
+    }
+
+    function setVRFConfig(
+        address coordinator_,
+        uint64 subscriptionId_,
+        bytes32 keyHash_,
+        uint32 callbackGasLimit_,
+        uint32 numWords_,
+        uint16 requestConfirmations_
+    ) external onlyAdmin {
+        COORDINATOR = VRFCoordinatorV2Interface(coordinator_);
+        subscriptionId = subscriptionId_;
+        keyHash = keyHash_;
+        callbackGasLimit = callbackGasLimit_;
+        numWords = numWords_;
+        requestConfirmations = requestConfirmations_;
+    }
+
+    function setStop(bool isStopped_) external onlyAdmin {
+        isStopped = isStopped_;
     }
 
     function grantOperatorRole(address operator) external onlyAdmin {
@@ -118,6 +140,8 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
         unchecked {
             filledSlots += amount_;
         }
+
+        emit Deposit(roundId_, msg.sender, amount_);
     }
 
     function getParticipantsAtRound(uint roundId_) external view returns (address[] memory) {
@@ -193,6 +217,8 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
 
         bionTicket.safeTransferFrom(address(this), msg.sender, STANDARD, prizeDistributions[prize], "");
         isPrizeClaimed[roundId_][prize] = true;
+
+        emit Claim(roundId_, msg.sender, prize, prizeDistributions[prize]);
     }
 
     function drawSlots(uint randomNumber) public view returns (uint) {
@@ -288,5 +314,9 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
         }
 
         emit EndDrawSlots(roundId, drawnNumber);
+    }
+
+    function canTriggerDraw() public view returns (bool) {
+        return filledSlots == totalSlots && snapshots[currentRoundId] == 0 && !isDrawing && !isStopped;
     }
 }
