@@ -6,6 +6,8 @@ type NetworkConfigItem = {
     vrfCoordinator?: string;
     vrfSubId?: string;
     vrfKeyHash?: string;
+    signerAddress?: string;
+    ticketMachine?: string;
 };
 
 type NetworkConfigMap = {
@@ -19,7 +21,10 @@ export const NETWORK_CONFIG: NetworkConfigMap = {
         vrfCoordinator: "0x6A2AAd07396B36Fe02a22b33cf443582f682c82f",
         vrfKeyHash: "0xd4bb89654db74673a187bd804519e65e3f71a52bc55f11da7601a13dcf505314",
         vrfSubId: "2024",
-        bionTicket: "0x6648E4C341d8AD7Bb8F9425096086511dc25598d",
+        bionTicket: "0x999145Ed32318360c6B363bE729Bb0ca3af30B3a",
+        bionGameSlot: "0xfbaE63cc14707d2ff47Cc718085F860c56c62991",
+        signerAddress: "0xEa9de5994d34aD46bCFdb87C49f2070810fA53CE",
+        ticketMachine: "0xb426Be9414Cb7F4D9b14BC71519c2663a9332263",
     },
 };
 

@@ -115,6 +115,10 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
         return digits;
     }
 
+    function isDepositedAtRound(uint roundId, address user) public view returns (bool) {
+        return shareOf[user][roundId] > 0;
+    }
+
     function deposit(
         uint roundId_,
         uint ticketType_,
@@ -124,6 +128,7 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
         require(roundId_ == currentRoundId, "BionGameSlot: invalid roundId");
         require(ticketType_ == STANDARD || ticketType_ == UNMERCHANTABLE, "BionGameSlot: invalid ticket type");
         require(filledSlots + amount_ <= totalSlots, "BionGameSlot: not enough available slots");
+        require(shareOf[msg.sender][roundId_] == 0, "BionGameSlot: already deposited");
 
         bionTicket.safeTransferFrom(msg.sender, address(this), ticketType_, amount_, "");
 
