@@ -5,6 +5,7 @@ import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./interfaces/IBionTicket.sol";
 
 contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
@@ -15,6 +16,8 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
 
     IBionTicket public bionTicket;
 
+    uint public lastDrawnTime;
+    uint public delayDuration;
     uint public totalSlots;
     uint public filledSlots;
     uint public currentRoundId;
@@ -30,6 +33,15 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
     mapping(uint => mapping(uint => address)) public holderOf;
     // user => roundId => amount
     mapping(address => mapping(uint => uint)) public shareOf;
+    // use for withdrawal when pool stops
+    mapping(address => LatestUserDeposit) public latestUserDeposits;
+
+    struct LatestUserDeposit {
+        // uint roundId;
+        uint32 nStandards;
+        uint32 nUnmerchantables;
+    }
+
     // roundId => prize => bool
     mapping(uint => mapping(uint => bool)) public isPrizeClaimed;
 
@@ -43,9 +55,11 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
     uint public lastRequestId;
     bool public isDrawing;
 
-    event Deposit(uint indexed roundId, address indexed user, uint amount);
-    event Claim(uint indexed roundId, address indexed user, uint prize, uint amount);
+    event Deposit(uint indexed roundId, address indexed user, uint amount, uint ticketType);
+    event Claim(uint indexed roundId, address indexed user, uint[] prize, uint amount);
+    event Withdraw(uint indexed roundId, address indexed user, uint nStandards, uint nUnmerchantables);
     event StartDrawSlots(uint roundId);
+    event StopPool(uint roundId);
     event EndDrawSlots(uint roundId, uint randomResult);
 
     modifier onlyAdmin() {
@@ -58,6 +72,11 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
         _;
     }
 
+    modifier notStop() {
+        require(!isStopped, "BionGameSlot: stopped");
+        _;
+    }
+
     constructor(
         IBionTicket bionTicket_,
         uint totalSlots_,
@@ -65,9 +84,12 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
         uint[] memory prizeDistribution_,
         address coordinator_,
         uint64 subscriptionId_,
-        bytes32 keyHash_
+        bytes32 keyHash_,
+        uint delayDuration_
     ) VRFConsumerBaseV2(coordinator_) {
         _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        grantOperatorRole(msg.sender);
+
         bionTicket = bionTicket_;
         totalSlots = totalSlots_;
         nPrizes = nPrizes_;
@@ -80,6 +102,8 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
         COORDINATOR = VRFCoordinatorV2Interface(coordinator_);
         subscriptionId = subscriptionId_;
         keyHash = keyHash_;
+
+        delayDuration = delayDuration_;
     }
 
     function setVRFConfig(
@@ -98,11 +122,19 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
         requestConfirmations = requestConfirmations_;
     }
 
-    function setStop(bool isStopped_) external onlyAdmin {
-        isStopped = isStopped_;
+    function setStop() external onlyAdmin {
+        require(!isDrawing, "BionGameSlot: is drawing");
+        require(!isStopped, "BionGameSlot: already stopped");
+
+        isStopped = true;
+        emit StopPool(currentRoundId);
     }
 
-    function grantOperatorRole(address operator) external onlyAdmin {
+    function setDelayDuration(uint delayDuration_) external onlyAdmin {
+        delayDuration = delayDuration_;
+    }
+
+    function grantOperatorRole(address operator) public onlyAdmin {
         grantRole(OPERATOR_ROLE, operator);
     }
 
@@ -119,23 +151,46 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
         return shareOf[user][roundId] > 0;
     }
 
+    function isRoundStart() public view returns (bool) {
+        return block.timestamp >= lastDrawnTime + delayDuration && filledSlots < totalSlots;
+    }
+
+    function getPrizeDistributions() external view returns (uint[] memory) {
+        return prizeDistributions;
+    }
+
     function deposit(
         uint roundId_,
         uint ticketType_,
         uint amount_
-    ) external {
-        require(!isStopped, "BionGameSlot: stopped");
+    ) external notStop {
+        require(block.timestamp > lastDrawnTime + delayDuration, "BionGameSlot: not yet");
+        require(amount_ > 0, "BionGameSlot: amount must be greater than 0");
         require(roundId_ == currentRoundId, "BionGameSlot: invalid roundId");
         require(ticketType_ == STANDARD || ticketType_ == UNMERCHANTABLE, "BionGameSlot: invalid ticket type");
         require(filledSlots + amount_ <= totalSlots, "BionGameSlot: not enough available slots");
-        require(shareOf[msg.sender][roundId_] == 0, "BionGameSlot: already deposited");
 
         bionTicket.safeTransferFrom(msg.sender, address(this), ticketType_, amount_, "");
 
+        LatestUserDeposit memory latestUserDeposit = latestUserDeposits[msg.sender];
         if (shareOf[msg.sender][roundId_] == 0) {
             participants[roundId_].push(msg.sender);
-        }
 
+            if (ticketType_ == STANDARD) {
+                latestUserDeposit.nStandards = uint32(amount_);
+                latestUserDeposit.nUnmerchantables = 0;
+            } else {
+                latestUserDeposit.nStandards = 0;
+                latestUserDeposit.nUnmerchantables = uint32(amount_);
+            }
+        } else {
+            if (ticketType_ == STANDARD) {
+                latestUserDeposit.nStandards += uint32(amount_);
+            } else {
+                latestUserDeposit.nUnmerchantables += uint32(amount_);
+            }
+        }
+        latestUserDeposits[msg.sender] = latestUserDeposit;
         shareOf[msg.sender][roundId_] += amount_;
 
         for (uint i = 0; i < amount_; i++) {
@@ -146,7 +201,7 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
             filledSlots += amount_;
         }
 
-        emit Deposit(roundId_, msg.sender, amount_);
+        emit Deposit(roundId_, msg.sender, amount_, ticketType_);
     }
 
     function getParticipantsAtRound(uint roundId_) external view returns (address[] memory) {
@@ -173,8 +228,8 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
     }
 
     function isWinnerOfPrize(
-        address user_,
         uint roundId_,
+        address user_,
         uint prize_
     ) public view returns (bool isWinner) {
         uint drawnNumber = snapshots[roundId_];
@@ -193,37 +248,101 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
         }
     }
 
-    function getClaimablePrizesOfUser(address user_, uint roundId_) public view returns (bool[] memory) {
-        bool[] memory prizes = new bool[](nPrizes);
-        if (roundId_ >= currentRoundId || shareOf[user_][roundId_] == 0) {
-            return prizes;
+    function isUserClaimedPrizes(uint roundId_, address user_) public view returns (bool) {
+        uint[] memory prizesOfUser = getPrizesOfUser(roundId_, user_);
+
+        for (uint i = 0; i < prizesOfUser.length; i++) {
+            if (isPrizeClaimed[roundId_][prizesOfUser[i]]) {
+                return true;
+            }
         }
 
-        uint drawnNumber = snapshots[roundId_];
+        return false;
+    }
 
-        uint i = 0;
-        for (; i < nPrizes; ) {
-            uint digit = drawnNumber % (10**nDrawDigits);
-            drawnNumber /= 10**nDrawDigits;
-            if (holderOf[roundId_][digit] == user_ && !isPrizeClaimed[roundId_][i]) {
-                prizes[i] = true;
+    function getPrizesOfUser(uint roundId_, address user_) public view returns (uint[] memory) {
+        uint nPrizesOfUser = 0;
+        bool[] memory isPrizesOfUser = new bool[](nPrizes);
+
+        for (uint i = 0; i < nPrizes; i++) {
+            if (isWinnerOfPrize(roundId_, user_, i)) {
+                nPrizesOfUser++;
+                isPrizesOfUser[i] = true;
             }
-            unchecked {
-                i++;
+        }
+
+        uint[] memory prizes = new uint[](nPrizesOfUser);
+        uint j = 0;
+        for (uint i = 0; i < nPrizes; i++) {
+            if (isPrizesOfUser[i]) {
+                prizes[j] = i;
+                j++;
             }
         }
 
         return prizes;
     }
 
-    function claim(uint roundId_, uint prize) external {
-        require(isWinnerOfPrize(msg.sender, roundId_, prize), "BionGameSlot: not winner");
-        require(!isPrizeClaimed[roundId_][prize], "BionGameSlot: already claimed");
+    function getClaimablePrizesOfUser(uint roundId_, address user_) public view returns (uint[] memory) {
+        bool[] memory isWonAtPrizes = new bool[](nPrizes);
+        if (roundId_ >= currentRoundId || shareOf[user_][roundId_] == 0) {
+            return new uint[](0);
+        }
 
-        bionTicket.safeTransferFrom(address(this), msg.sender, STANDARD, prizeDistributions[prize], "");
-        isPrizeClaimed[roundId_][prize] = true;
+        uint drawnNumber = snapshots[roundId_];
 
-        emit Claim(roundId_, msg.sender, prize, prizeDistributions[prize]);
+        uint nWonPrizes = 0;
+        uint i = 0;
+        for (; i < nPrizes; ) {
+            uint digit = drawnNumber % (10**nDrawDigits);
+            drawnNumber /= 10**nDrawDigits;
+            if (holderOf[roundId_][digit] == user_ && !isPrizeClaimed[roundId_][i]) {
+                isWonAtPrizes[i] = true;
+                nWonPrizes++;
+            }
+            unchecked {
+                i++;
+            }
+        }
+
+        uint[] memory claimablePrizes = new uint[](nWonPrizes);
+        uint j = 0;
+        for (uint k = 0; k < nPrizes; k++) {
+            if (isWonAtPrizes[k]) {
+                claimablePrizes[j] = k;
+                j++;
+            }
+        }
+
+        return claimablePrizes;
+    }
+
+    function claim(uint roundId) external {
+        uint[] memory claimablePrizes = getClaimablePrizesOfUser(roundId, msg.sender);
+        require(claimablePrizes.length > 0, "BionGameSlot: no prize to claim");
+
+        uint totalClaimable = 0;
+        for (uint i = 0; i < claimablePrizes.length; i++) {
+            totalClaimable += prizeDistributions[claimablePrizes[i]];
+            isPrizeClaimed[roundId][claimablePrizes[i]] = true;
+        }
+
+        bionTicket.safeTransferFrom(address(this), msg.sender, STANDARD, totalClaimable, "");
+        emit Claim(roundId, msg.sender, claimablePrizes, totalClaimable);
+    }
+
+    function withdraw() external {
+        require(isStopped, "BionGameSlot: not stopped");
+        require(shareOf[msg.sender][currentRoundId] > 0, "BionGameSlot: not deposited");
+
+        LatestUserDeposit memory latestUserDeposit = latestUserDeposits[msg.sender];
+        require(latestUserDeposit.nStandards > 0 || latestUserDeposit.nUnmerchantables > 0, "BionGameSlot: already withdrawn");
+
+        bionTicket.safeTransferFrom(address(this), msg.sender, STANDARD, latestUserDeposit.nStandards, "");
+        bionTicket.safeTransferFrom(address(this), msg.sender, UNMERCHANTABLE, latestUserDeposit.nUnmerchantables, "");
+
+        latestUserDeposits[msg.sender] = LatestUserDeposit(0, 0);
+        emit Withdraw(currentRoundId, msg.sender, latestUserDeposit.nStandards, latestUserDeposit.nUnmerchantables);
     }
 
     function drawSlots(uint randomNumber) public view returns (uint) {
@@ -287,8 +406,7 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
         return bytes4(keccak256("onERC1155BatchReceived(address,address,uint256[],uint256[],bytes)"));
     }
 
-    function requestRandom() external onlyOperator {
-        require(!isStopped, "BionGameSlot: stopped");
+    function requestRandom() external onlyOperator notStop {
         require(filledSlots == totalSlots, "BionGameSlot: not enough participants");
         require(snapshots[currentRoundId] == 0, "BionGameSlot: already drawn");
         require(!isDrawing, "BionGameSlot: is drawing");
@@ -313,6 +431,7 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
         isDrawing = false;
         snapshots[currentRoundId] = drawnNumber;
         filledSlots = 0;
+        lastDrawnTime = block.timestamp;
         uint roundId = currentRoundId;
         unchecked {
             currentRoundId++;
@@ -323,5 +442,14 @@ contract BionGameSlot is AccessControl, IERC1155Receiver, VRFConsumerBaseV2 {
 
     function canTriggerDraw() public view returns (bool) {
         return filledSlots == totalSlots && snapshots[currentRoundId] == 0 && !isDrawing && !isStopped;
+    }
+
+    function forceReturnTickets(uint ticketType_) external onlyAdmin {
+        uint balance = bionTicket.balanceOf(address(this), ticketType_);
+        bionTicket.safeTransferFrom(address(this), msg.sender, ticketType_, balance, "");
+    }
+
+    function recoverLostTokens(address token_, address to_) external onlyAdmin {
+        IERC20(token_).transfer(to_, IERC20(token_).balanceOf(address(this)));
     }
 }

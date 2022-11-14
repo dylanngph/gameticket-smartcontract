@@ -1,4 +1,4 @@
-import {loadFixture} from "@nomicfoundation/hardhat-network-helpers";
+import {loadFixture, time} from "@nomicfoundation/hardhat-network-helpers";
 import {SignerWithAddress} from "@nomiclabs/hardhat-ethers/signers";
 import {expect} from "chai";
 import {BigNumber} from "ethers";
@@ -11,6 +11,7 @@ import {
     VRFCoordinatorV2Mock__factory,
     VRFCoordinatorV2Mock,
 } from "../types";
+import {getNFT1155BatchBalanceChange} from "./utils";
 
 describe("BionGameSlot", function () {
     let admin: SignerWithAddress;
@@ -31,6 +32,7 @@ describe("BionGameSlot", function () {
     const FIRST_ROUND_ID = 0;
     const MOCK_SUBSCRIPTION_ID = 1;
     const MOCK_KEY_HASH = "0xd4bb89654db74673a187bd804519e65e3f71a52bc55f11da7601a13dcf505314";
+    const DELAY_DURATION = 90;
 
     async function setupDeployments() {
         [admin, user1, user2] = await ethers.getSigners();
@@ -52,7 +54,8 @@ describe("BionGameSlot", function () {
             PRIZE_DISTRIBUTION,
             mockVRFCoordinator.address,
             MOCK_SUBSCRIPTION_ID,
-            MOCK_KEY_HASH
+            MOCK_KEY_HASH,
+            DELAY_DURATION
         );
         await mockVRFCoordinator.addConsumer(MOCK_SUBSCRIPTION_ID, bionGameSlot.address);
         await bionGameSlot.grantOperatorRole(admin.address);
@@ -61,13 +64,19 @@ describe("BionGameSlot", function () {
         return {bionGameSlot, bionTicket, mockVRFCoordinator};
     }
 
-    async function setupParticipants(roundId: number) {
-        const participants = (await ethers.getSigners()).slice(1, 11);
+    async function setupParticipants(
+        roundId: number,
+        nParticipants: number = 10,
+        nTicketsForEachParticipant: number = 1,
+        ticketTypeToUse: number = TICKET_TYPE_TO_USE,
+        fromIndex: number = 0
+    ) {
+        const participants = (await ethers.getSigners()).slice(fromIndex + 1, fromIndex + nParticipants + 1);
         for (const participant of participants) {
-            await bionTicket.mint(participant.address, 1, TICKET_TYPE_TO_USE);
+            await bionTicket.mint(participant.address, nTicketsForEachParticipant, ticketTypeToUse);
             await bionTicket.connect(participant).setApprovalForAll(bionGameSlot.address, true);
 
-            await bionGameSlot.connect(participant).deposit(roundId, TICKET_TYPE_TO_USE, 1);
+            await bionGameSlot.connect(participant).deposit(roundId, ticketTypeToUse, nTicketsForEachParticipant);
         }
         return participants;
     }
@@ -84,7 +93,7 @@ describe("BionGameSlot", function () {
 
         // claim prize
         for (let i = 0; i < winningSeats.length; i++) {
-            await bionGameSlot.connect(participants[winningSeats[i]]).claim(roundId, i);
+            await bionGameSlot.connect(participants[winningSeats[i]]).claim(roundId);
         }
     }
 
@@ -160,7 +169,8 @@ describe("BionGameSlot", function () {
                 prizeDistribution,
                 mockVRFCoordinator.address,
                 MOCK_SUBSCRIPTION_ID,
-                MOCK_KEY_HASH
+                MOCK_KEY_HASH,
+                DELAY_DURATION
             );
             await bionGameSlot.grantOperatorRole(admin.address);
 
@@ -202,21 +212,24 @@ describe("BionGameSlot", function () {
 
             // claim prize
             for (let i = 0; i < winningSeats.length; i++) {
-                await bionGameSlot.connect(participants[winningSeats[i]]).claim(firstRoundId, i);
+                await expect(bionGameSlot.connect(participants[winningSeats[i]]).claim(firstRoundId)).to.emit(
+                    bionGameSlot,
+                    "Claim"
+                );
                 expect(await bionTicket.balanceOf(participants[winningSeats[i]].address, STANDARD)).to.equal(
                     PRIZE_DISTRIBUTION[i]
                 );
-                await expect(bionGameSlot.connect(participants[winningSeats[i]]).claim(firstRoundId, i)).to.revertedWith(
-                    "BionGameSlot: already claimed"
+                await expect(bionGameSlot.connect(participants[winningSeats[i]]).claim(firstRoundId)).to.revertedWith(
+                    "BionGameSlot: no prize to claim"
                 );
             }
 
             // not winner
-            await expect(bionGameSlot.connect(admin).claim(firstRoundId, 1)).to.revertedWith("BionGameSlot: not winner");
+            await expect(bionGameSlot.connect(admin).claim(firstRoundId)).to.revertedWith("BionGameSlot: no prize to claim");
         });
     });
 
-    describe("E2E", async () => {
+    describe("E2E", () => {
         it("should E2E", async () => {
             const firstRoundId = 0;
             const participants = await setupParticipants(firstRoundId);
@@ -224,10 +237,72 @@ describe("BionGameSlot", function () {
             await setupClaim(firstRoundId, participants);
             expect(await bionGameSlot.currentRoundId()).to.equal(firstRoundId + 1);
 
+            await expect(bionGameSlot.connect(user1).deposit(firstRoundId + 1, STANDARD, 1)).to.revertedWith(
+                "BionGameSlot: not yet"
+            );
+            await time.increaseTo((await bionGameSlot.lastDrawnTime()).add(DELAY_DURATION + 1));
             await setupParticipants(firstRoundId + 1);
             await setupDraw();
             await setupClaim(firstRoundId + 1, participants);
             expect(await bionGameSlot.currentRoundId()).to.equal(firstRoundId + 2);
+        });
+    });
+
+    describe("STOP POOL", () => {
+        it("should stop pool", async () => {
+            const firstRoundId = 0;
+            await setupParticipants(firstRoundId);
+            await expect(bionGameSlot.connect(admin).withdraw()).to.revertedWith("BionGameSlot: not stopped");
+            await expect(bionGameSlot.setStop()).to.emit(bionGameSlot, "StopPool");
+            await expect(bionGameSlot.connect(user1).deposit(firstRoundId + 1, STANDARD, 1)).to.revertedWith(
+                "BionGameSlot: stopped"
+            );
+        });
+        it("should let participants withdraw", async () => {
+            const firstRoundId = 0;
+            await setupParticipants(firstRoundId, 1, 2, STANDARD, 0);
+            const [user1] = await setupParticipants(firstRoundId, 1, 2, UNMERCHANTABLE, 0);
+            const [user2] = await setupParticipants(firstRoundId, 1, 3, STANDARD, 1);
+            const [user3] = await setupParticipants(firstRoundId, 1, 3, UNMERCHANTABLE, 2);
+
+            await bionGameSlot.setStop();
+
+            const [
+                user1StandardBalanceChange,
+                user1UnmerchantableBalanceChange,
+                user2StandardBalanceChange,
+                user2UnmerchantableBalanceChange,
+                user3StandardBalanceChange,
+                user3UnmerchantableBalanceChange,
+            ] = await getNFT1155BatchBalanceChange(
+                [user1.address, user1.address, user2.address, user2.address, user3.address, user3.address],
+                bionTicket,
+                [STANDARD, UNMERCHANTABLE, STANDARD, UNMERCHANTABLE, STANDARD, UNMERCHANTABLE],
+                async () => {
+                    await expect(bionGameSlot.connect(user1).withdraw())
+                        .to.emit(bionGameSlot, "Withdraw")
+                        .withArgs(firstRoundId, user1.address, 2, 2);
+
+                    await expect(bionGameSlot.connect(user2).withdraw())
+                        .to.emit(bionGameSlot, "Withdraw")
+                        .withArgs(firstRoundId, user2.address, 3, 0);
+
+                    await expect(bionGameSlot.connect(user3).withdraw())
+                        .to.emit(bionGameSlot, "Withdraw")
+                        .withArgs(firstRoundId, user3.address, 0, 3);
+                }
+            );
+            expect(user1StandardBalanceChange).to.equal(2);
+            expect(user1UnmerchantableBalanceChange).to.equal(2);
+            expect(user2StandardBalanceChange).to.equal(3);
+            expect(user2UnmerchantableBalanceChange).to.equal(0);
+            expect(user3StandardBalanceChange).to.equal(0);
+            expect(user3UnmerchantableBalanceChange).to.equal(3);
+
+            await expect(bionGameSlot.connect(user1).withdraw()).to.revertedWith("BionGameSlot: already withdrawn");
+            await expect(bionGameSlot.connect(user2).withdraw()).to.revertedWith("BionGameSlot: already withdrawn");
+            await expect(bionGameSlot.connect(user3).withdraw()).to.revertedWith("BionGameSlot: already withdrawn");
+            await expect(bionGameSlot.connect(admin).withdraw()).to.revertedWith("BionGameSlot: not deposited");
         });
     });
 });

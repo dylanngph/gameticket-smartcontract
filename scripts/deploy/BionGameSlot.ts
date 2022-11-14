@@ -9,6 +9,7 @@ async function main() {
     const TOTAL_SLOTS = 10;
     const NPRIZES = 3;
     const PRIZE_DISTRIBUTION = [5, 1, 1];
+    const DELAY_DURATION = 90;
 
     const bionGameSlot = await (<BionGameSlot__factory>await ethers.getContractFactory("BionGameSlot"))
         .connect(admin)
@@ -19,7 +20,8 @@ async function main() {
             PRIZE_DISTRIBUTION,
             NETWORK_CONFIG[chainId].vrfCoordinator!,
             NETWORK_CONFIG[chainId].vrfSubId!,
-            NETWORK_CONFIG[chainId].vrfKeyHash!
+            NETWORK_CONFIG[chainId].vrfKeyHash!,
+            DELAY_DURATION
         );
 
     console.log("BionGameSlot deployed to:", bionGameSlot.address);

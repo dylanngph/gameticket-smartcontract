@@ -65,7 +65,7 @@ contract TicketMachine is Ownable, ReentrancyGuard {
         address signer_ = hash.toEthSignedMessageHash().recover(adminSignature);
         require(signer_ == signer, "TicketMachine: invalid signer");
 
-        IERC20(currency_).transferFrom(user, payTo, totalPay_);
+        IERC20(currency_).transferFrom(user, payTo, totalPay_ - refReward_);
         if (referrer_ != address(0)) {
             IERC20(currency_).transferFrom(user, referrer_, refReward_);
         }
@@ -93,7 +93,7 @@ contract TicketMachine is Ownable, ReentrancyGuard {
         require(signer_ == signer, "TicketMachine: invalid signer");
         require(msg.value == totalPay_ + refReward_, "TicketMachine: not enough balance");
 
-        payable(payTo).transfer(totalPay_);
+        payable(payTo).transfer(totalPay_ - refReward_);
         if (referrer_ != address(0)) {
             payable(referrer_).transfer(refReward_);
         }

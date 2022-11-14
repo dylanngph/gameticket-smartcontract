@@ -57,8 +57,17 @@ export async function getTokenBalanceChange<T extends {balanceOf: (address: stri
     token: T,
     cb: () => Promise<void>
 ) {
-    const balances = await Promise.all(addresses.map((address) => token.balanceOf(address)));
+    const balancesBefore = await Promise.all(addresses.map((address) => token.balanceOf(address)));
     await cb();
     const balancesAfter = await Promise.all(addresses.map((address) => token.balanceOf(address)));
-    return balancesAfter.map((balance, i) => balance.sub(balances[i]));
+    return balancesAfter.map((balanceAfter, i) => balanceAfter.sub(balancesBefore[i]));
+}
+
+export async function getNFT1155BatchBalanceChange<
+    T extends {balanceOfBatch: (addresses: string[], tokenIds: number[]) => Promise<BigNumber[]>}
+>(addresses: string[], token: T, tokenIds: number[], cb: () => Promise<void>) {
+    const balancesBefore = await token.balanceOfBatch(addresses, tokenIds);
+    await cb();
+    const balancesAfter = await token.balanceOfBatch(addresses, tokenIds);
+    return balancesAfter.map((balanceAfter, i) => balanceAfter.sub(balancesBefore[i]));
 }

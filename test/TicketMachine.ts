@@ -70,7 +70,7 @@ describe("TicketMachine", function () {
                                 pTotalPay,
                                 referrer,
                                 pRefReward,
-                                deadline.toString(),
+                                deadline,
                                 signature
                             )
                     ).to.emit(ticketMachine, "PurchaseTickets");
